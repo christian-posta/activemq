@@ -16,10 +16,7 @@
  */
 package org.apache.activemq.store.kahadb.disk.journal;
 
-import java.io.File;
-import java.io.FilenameFilter;
-import java.io.IOException;
-import java.io.UnsupportedEncodingException;
+import java.io.*;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
@@ -27,12 +24,9 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.zip.Adler32;
 import java.util.zip.Checksum;
 import org.apache.activemq.store.kahadb.disk.util.LinkedNode;
-import org.apache.activemq.util.IOHelper;
+import org.apache.activemq.util.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.apache.activemq.util.ByteSequence;
-import org.apache.activemq.util.DataByteArrayInputStream;
-import org.apache.activemq.util.DataByteArrayOutputStream;
 import org.apache.activemq.store.kahadb.disk.util.LinkedNodeList;
 import org.apache.activemq.store.kahadb.disk.util.SchedulerTimerTask;
 import org.apache.activemq.store.kahadb.disk.util.Sequence;
@@ -85,6 +79,7 @@ public class Journal {
 
     protected final Map<WriteKey, WriteCommand> inflightWrites = new ConcurrentHashMap<WriteKey, WriteCommand>();
 
+    protected File journalTemplateFile;
     protected File directory = new File(DEFAULT_DIRECTORY);
     protected File directoryArchive;
     private boolean directoryArchiveOverridden = false;
@@ -181,6 +176,9 @@ public class Journal {
             totalLength.addAndGet(lastAppendLocation.get().getOffset() - maxFileLength);
         }
 
+        // create a template file that will be used to pre-allocate the journal files
+        createJournalTemplateFile();
+
         cleanupTask = new Runnable() {
             public void run() {
                 cleanup();
@@ -191,6 +189,34 @@ public class Journal {
         this.timer.scheduleAtFixedRate(task, DEFAULT_CLEANUP_INTERVAL,DEFAULT_CLEANUP_INTERVAL);
         long end = System.currentTimeMillis();
         LOG.trace("Startup took: "+(end-start)+" ms");
+    }
+
+    private void createJournalTemplateFile() {
+        String fileName = filePrefix + "template" + fileSuffix;
+        journalTemplateFile = new File(directory, fileName);
+        try {
+            LOG.info("Writing template file for pre-allocating journal");
+            RandomAccessFile raf = new RandomAccessFile(journalTemplateFile, "rw");
+            raf.setLength(maxFileLength);
+            raf.close();
+        } catch (FileNotFoundException e) {
+            LOG.warn("Could not create the template file on disk at " + fileName, e);
+        } catch (IOException e) {
+            LOG.warn("Could not writethe template file on disk at " + fileName, e);
+        }
+    }
+
+    public void preallocateDataFile(RecoverableRandomAccessFile file) {
+        RandomAccessFile template = null;
+        try {
+            template = new RandomAccessFile(journalTemplateFile, "rw");
+            template.getChannel().transferTo(0, getMaxFileLength(), file.getChannel());
+            template.close();
+        } catch (FileNotFoundException e) {
+            LOG.warn("Could not find the template file on disk at " + journalTemplateFile.getAbsolutePath(), e);
+        } catch (IOException e) {
+            LOG.warn("Could not transfer the template file to journal, transferFile=" + journalTemplateFile.getAbsolutePath(), e);
+        }
     }
 
     private static byte[] bytes(String string) {
